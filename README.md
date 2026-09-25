@@ -2,7 +2,8 @@
 ### Discovery-First Edition
 
 > **Room:** NULLFORGE  
-> **Platform:** TryHackMe  
+> **Platform:** TryHackMe
+> **URL:** https://tryhackme.com/room/nullforge  
 > **Difficulty:** Hard  
 > **Type:** Challenge / Boot2Root  
 > **Target solve time:** ~120 minutes  
