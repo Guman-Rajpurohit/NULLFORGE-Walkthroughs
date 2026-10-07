@@ -9,7 +9,7 @@
 > **Target solve time:** ~120 minutes  
 > **Flags:** 10
 
----
+--- 
 
 ## ⚠️ Spoiler Notice
 
